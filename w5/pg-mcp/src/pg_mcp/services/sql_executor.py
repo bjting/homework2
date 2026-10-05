@@ -94,7 +94,7 @@ class SQLExecutor:
         try:
             async with (
                 self.pool.acquire() as connection,
-                connection.transaction(readonly=True),
+                connection.transaction(readonly=not self.security_config.allow_write_operations),
             ):
                 # Set session parameters for security
                 await self._set_session_params(connection, timeout)

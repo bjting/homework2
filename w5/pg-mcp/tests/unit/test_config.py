@@ -140,7 +140,7 @@ class TestOpenAIConfig:
             OpenAIConfig(api_key="sk-test", max_tokens=50)
 
         with pytest.raises(ValidationError):
-            OpenAIConfig(api_key="sk-test", max_tokens=5000)
+            OpenAIConfig(api_key="sk-test", max_tokens=200000)
 
     def test_invalid_temperature(self) -> None:
         """Test invalid temperature is rejected."""
@@ -162,6 +162,10 @@ class TestSecurityConfig:
         assert config.max_execution_time == 30.0
         assert "pg_sleep" in config.blocked_functions
         assert "pg_read_file" in config.blocked_functions
+        # Security policy defaults: nothing blocked, EXPLAIN disallowed
+        assert config.blocked_tables == []
+        assert config.blocked_columns == []
+        assert config.allow_explain is False
 
     def test_custom_blocked_functions(self) -> None:
         """Test custom blocked functions."""
@@ -178,6 +182,29 @@ class TestSecurityConfig:
         assert "func1" in config.blocked_functions
         assert "func2" in config.blocked_functions
         assert "func3" in config.blocked_functions
+
+    def test_blocked_tables_and_columns(self) -> None:
+        """Test blocked tables/columns configuration (sensitive objects)."""
+        config = SecurityConfig(
+            blocked_tables=["audit_logs", "user_credentials"],
+            blocked_columns=["password", "users.email"],
+        )
+        assert config.blocked_tables == ["audit_logs", "user_credentials"]
+        assert config.blocked_columns == ["password", "users.email"]
+
+    def test_parse_blocked_tables_from_string(self) -> None:
+        """Test parsing blocked tables/columns from comma-separated strings."""
+        config = SecurityConfig(
+            blocked_tables="audit_logs, secrets",  # type: ignore
+            blocked_columns="password, users.email",  # type: ignore
+        )
+        assert config.blocked_tables == ["audit_logs", "secrets"]
+        assert config.blocked_columns == ["password", "users.email"]
+
+    def test_allow_explain_policy(self) -> None:
+        """Test EXPLAIN policy configuration."""
+        assert SecurityConfig().allow_explain is False
+        assert SecurityConfig(allow_explain=True).allow_explain is True
 
     def test_allow_write_operations(self) -> None:
         """Test enabling write operations."""
@@ -200,24 +227,24 @@ class TestValidationConfig:
         """Test default configuration values."""
         config = ValidationConfig()
         assert config.max_question_length == 10000
-        assert config.min_confidence_score == 70
+        assert config.confidence_threshold == 70
 
     def test_custom_values(self) -> None:
         """Test custom configuration values."""
         config = ValidationConfig(
             max_question_length=5000,
-            min_confidence_score=80,
+            confidence_threshold=80,
         )
         assert config.max_question_length == 5000
-        assert config.min_confidence_score == 80
+        assert config.confidence_threshold == 80
 
     def test_invalid_confidence_score(self) -> None:
         """Test invalid confidence score is rejected."""
         with pytest.raises(ValidationError):
-            ValidationConfig(min_confidence_score=-1)
+            ValidationConfig(confidence_threshold=-1)
 
         with pytest.raises(ValidationError):
-            ValidationConfig(min_confidence_score=101)
+            ValidationConfig(confidence_threshold=101)
 
 
 class TestCacheConfig:
@@ -261,6 +288,10 @@ class TestResilienceConfig:
         assert config.backoff_factor == 2.0
         assert config.circuit_breaker_threshold == 5
         assert config.circuit_breaker_timeout == 60.0
+        # Rate limiting defaults wired into the request path
+        assert config.query_rate_limit == 10
+        assert config.llm_rate_limit == 5
+        assert config.rate_limit_timeout == 5.0
 
     def test_custom_values(self) -> None:
         """Test custom configuration values."""
@@ -273,6 +304,17 @@ class TestResilienceConfig:
         assert config.retry_delay == 2.0
         assert config.backoff_factor == 3.0
 
+    def test_custom_rate_limits(self) -> None:
+        """Test custom rate limiter configuration."""
+        config = ResilienceConfig(
+            query_rate_limit=20,
+            llm_rate_limit=8,
+            rate_limit_timeout=15.0,
+        )
+        assert config.query_rate_limit == 20
+        assert config.llm_rate_limit == 8
+        assert config.rate_limit_timeout == 15.0
+
     def test_invalid_values(self) -> None:
         """Test invalid values are rejected."""
         with pytest.raises(ValidationError):
@@ -280,6 +322,12 @@ class TestResilienceConfig:
 
         with pytest.raises(ValidationError):
             ResilienceConfig(backoff_factor=0.5)
+
+        with pytest.raises(ValidationError):
+            ResilienceConfig(query_rate_limit=0)
+
+        with pytest.raises(ValidationError):
+            ResilienceConfig(llm_rate_limit=0)
 
 
 class TestObservabilityConfig:
@@ -292,7 +340,7 @@ class TestObservabilityConfig:
         # 生产环境应该通过环境变量显式设置
         assert config.metrics_port == 9090
         assert config.log_level == "INFO"
-        assert config.log_format == "json"
+        assert config.log_format == "text"
 
     def test_custom_values(self) -> None:
         """Test custom configuration values."""
@@ -366,6 +414,77 @@ class TestSettings:
         assert settings.database.host == "custom.host"
         assert settings.database.port == 5433
         assert settings.security.allow_write_operations is True
+
+
+class TestMultiDatabaseSettings:
+    """Tests for multi-database configuration."""
+
+    def test_single_database_by_default(self) -> None:
+        """Test that only the primary database is configured by default."""
+        # _env_file=None keeps a developer's real .env (which may declare
+        # EXTRA_DATABASES) from leaking into this default-value assertion
+        settings = Settings(_env_file=None, openai=OpenAIConfig(api_key="sk-test"))
+        assert list(settings.databases.keys()) == [settings.database.name]
+
+    def test_extra_databases_from_list(self) -> None:
+        """Test extra databases provided as list of dicts."""
+        settings = Settings(
+            openai=OpenAIConfig(api_key="sk-test"),
+            extra_databases=[{"name": "warehouse"}, {"name": "analytics"}],
+        )
+        assert set(settings.databases.keys()) == {"postgres", "warehouse", "analytics"}
+
+    def test_extra_databases_inherit_primary_fields(self, monkeypatch) -> None:
+        """Test that extra databases inherit omitted fields from DATABASE_* env/defaults."""
+        monkeypatch.setenv("DATABASE_USER", "pguser")
+        settings = Settings(
+            openai=OpenAIConfig(api_key="sk-test"),
+            extra_databases=[{"name": "warehouse", "host": "warehouse.host"}],
+        )
+        warehouse = settings.databases["warehouse"]
+        assert warehouse.host == "warehouse.host"  # Overridden by JSON entry
+        assert warehouse.user == "pguser"  # Inherited from DATABASE_* environment
+
+    def test_extra_databases_from_json_string(self) -> None:
+        """Test EXTRA_DATABASES parsed from JSON string (env var format)."""
+        settings = Settings(
+            openai=OpenAIConfig(api_key="sk-test"),
+            extra_databases='[{"name": "warehouse"}, {"name": "analytics"}]',  # type: ignore
+        )
+        assert set(settings.databases.keys()) == {"postgres", "warehouse", "analytics"}
+
+    def test_extra_databases_empty_string(self) -> None:
+        """Test empty EXTRA_DATABASES string yields no extra databases."""
+        settings = Settings(
+            openai=OpenAIConfig(api_key="sk-test"),
+            extra_databases="",  # type: ignore
+        )
+        assert settings.extra_databases == []
+
+    def test_extra_databases_invalid_json_rejected(self) -> None:
+        """Test invalid JSON in EXTRA_DATABASES is rejected."""
+        with pytest.raises(ValidationError, match="not valid JSON"):
+            Settings(
+                openai=OpenAIConfig(api_key="sk-test"),
+                extra_databases="not-json",  # type: ignore
+            )
+
+    def test_extra_databases_non_array_rejected(self) -> None:
+        """Test non-array JSON in EXTRA_DATABASES is rejected."""
+        with pytest.raises(ValidationError, match="JSON array"):
+            Settings(
+                openai=OpenAIConfig(api_key="sk-test"),
+                extra_databases='{"name": "warehouse"}',  # type: ignore
+            )
+
+    def test_duplicate_database_names_rejected(self) -> None:
+        """Test duplicate database names fail validation."""
+        with pytest.raises(ValidationError, match="Duplicate database names"):
+            Settings(
+                openai=OpenAIConfig(api_key="sk-test"),
+                extra_databases=[{"name": "main"}],
+                database=DatabaseConfig(name="main"),
+            )
 
 
 class TestSettingsGlobalInstance:

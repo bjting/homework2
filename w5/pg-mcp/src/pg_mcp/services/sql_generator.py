@@ -5,13 +5,18 @@ natural language questions into valid PostgreSQL SQL queries.
 """
 
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from openai import AsyncOpenAI
 
 from pg_mcp.config.settings import OpenAIConfig
-from pg_mcp.models.errors import LLMError, LLMTimeoutError, LLMUnavailableError
-from pg_mcp.prompts.sql_generation import SQL_GENERATION_SYSTEM_PROMPT, build_user_prompt
+from pg_mcp.models.errors import (
+    LLMError,
+    LLMTimeoutError,
+    LLMUnavailableError,
+    SecurityViolationError,
+)
+from pg_mcp.prompts.sql_generation import build_system_prompt, build_user_prompt
 
 if TYPE_CHECKING:
     from openai.types.chat import ChatCompletion
@@ -42,7 +47,11 @@ class SQLGenerator:
             config: OpenAI configuration including API key and model settings.
         """
         self.config = config
-        self.client = AsyncOpenAI(api_key=config.api_key.get_secret_value(), timeout=config.timeout)
+        self.client = AsyncOpenAI(
+            api_key=config.api_key.get_secret_value(),
+            timeout=config.timeout,
+            base_url=config.base_url,
+        )
 
     async def generate(
         self,
@@ -51,6 +60,7 @@ class SQLGenerator:
         context: str | None = None,
         previous_attempt: str | None = None,
         error_feedback: str | None = None,
+        security_policy: str | None = None,
     ) -> str:
         """Generate SQL statement from natural language question.
 
@@ -99,7 +109,7 @@ class SQLGenerator:
             response: ChatCompletion = await self.client.chat.completions.create(
                 model=self.config.model,
                 messages=[
-                    {"role": "system", "content": SQL_GENERATION_SYSTEM_PROMPT},
+                    {"role": "system", "content": build_system_prompt(security_policy)},
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=self.config.temperature,
@@ -142,6 +152,12 @@ class SQLGenerator:
                 details={"response": response.model_dump()},
             )
 
+        # The model signals that the question requires blocked objects; reject
+        # with a user-friendly message instead of searching for SQL
+        denial = self._extract_access_denial(content)
+        if denial:
+            raise SecurityViolationError(*denial)
+
         sql = self._extract_sql(content)
         if not sql:
             raise LLMError(
@@ -150,6 +166,36 @@ class SQLGenerator:
             )
 
         return sql
+
+    def _extract_access_denial(self, content: str) -> tuple[str, dict[str, Any]] | None:
+        """Detect the ACCESS_DENIED protocol signal in the model output.
+
+        The security policy instructs the model to reply with
+        ``ACCESS_DENIED: <object>`` when the question requires blocked
+        tables/columns, instead of substituting other objects.
+
+        Args:
+            content: Raw content from LLM response.
+
+        Returns:
+            tuple | None: (message, details) for SecurityViolationError, or None.
+        """
+        for line in content.splitlines():
+            line = line.strip().strip("`").strip()
+            if line.upper().startswith("ACCESS_DENIED"):
+                obj = line.split(":", 1)[1].strip().strip("\"'") if ":" in line else "受限对象"
+                if "." in obj:
+                    message = (
+                        f'您没有权限查看列 "{obj}"：该列已被管理员列为敏感数据，'
+                        "不会出现在查询结果中。请调整问题，改查其他列。"
+                    )
+                else:
+                    message = (
+                        f'您没有权限查看表 "{obj}"：该表已被管理员列为受保护对象，'
+                        "无法查询其内容。如需访问，请联系管理员申请权限。"
+                    )
+                return message, {"access_denied": True, "object": obj}
+        return None
 
     def _extract_sql(self, content: str) -> str | None:
         """Extract SQL query from LLM response content.

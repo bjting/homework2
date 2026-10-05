@@ -148,6 +148,9 @@ class QueryResponse(BaseModel):
     """Complete query response to client."""
 
     success: bool = Field(..., description="Whether query succeeded")
+    request_id: str | None = Field(
+        None, description="Unique request ID for end-to-end tracing (absent on early failure)"
+    )
     generated_sql: str | None = Field(None, description="Generated SQL query")
     validation: ValidationResult | None = Field(None, description="SQL validation results")
     data: QueryResult | None = Field(None, description="Query result data (if executed)")
@@ -160,14 +163,17 @@ class QueryResponse(BaseModel):
     def to_dict(self) -> dict[str, Any]:
         """Convert response to dictionary for MCP tool return.
 
+        This is the single canonical serialization for MCP responses:
+        ``None`` fields are omitted, except ``tokens_used`` which is always
+        present (0 when no LLM tokens were consumed).
+
         Returns:
             dict: Dictionary representation compatible with MCP protocol.
         """
-        # Use model_dump but ensure tokens_used is always present
-        result = self.model_dump(exclude_none=False)
+        result = self.model_dump(exclude_none=True)
 
         # Ensure tokens_used is always present (use 0 if None)
-        if result.get("tokens_used") is None:
+        if "tokens_used" not in result:
             result["tokens_used"] = 0
 
         return result
@@ -210,11 +216,3 @@ class QueryResponse(BaseModel):
             if not success and v is None:
                 raise ValueError("Error must be present when success is False")
         return v
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert response to dictionary.
-
-        Returns:
-            dict: Dictionary representation of query response.
-        """
-        return self.model_dump(exclude_none=True)

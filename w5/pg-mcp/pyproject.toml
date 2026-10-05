@@ -57,6 +57,16 @@ ignore = ["RUF022"] # Allow organized __all__ with comments
     "S105",
     "S106",
 ] # allow assert and hardcoded passwords in tests
+"verify_e2e.py" = [
+    "RUF001",
+    "RUF003",
+] # demo script intentionally uses full-width CJK punctuation
+"src/pg_mcp/services/sql_validator.py" = [
+    "RUF001",
+] # user-facing security messages are written in Chinese
+"src/pg_mcp/services/sql_generator.py" = [
+    "RUF001",
+] # user-facing security messages are written in Chinese
 
 [tool.mypy]
 python_version = "3.11"

@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DataSpeak · 用自然语言查询公司数据库（交互原型）</title>
+<style>
+  :root{
+    --bg:#0f172a; --panel:#1e293b; --panel2:#273449; --line:#334155;
+    --text:#e2e8f0; --muted:#94a3b8; --accent:#38bdf8; --accent2:#818cf8;
+    --ok:#34d399; --warn:#fbbf24; --bad:#f87171;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--bg);color:var(--text);font-family:"Segoe UI","Microsoft YaHei",sans-serif;height:100vh;display:flex;flex-direction:column}
+  header{display:flex;align-items:center;gap:12px;padding:12px 20px;border-bottom:1px solid var(--line);background:var(--panel)}
+  header .logo{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-weight:800;color:#0b1220}
+  header h1{font-size:17px}
+  header .sub{color:var(--muted);font-size:12px}
+  header .spacer{flex:1}
+  .badge{font-size:11px;padding:3px 9px;border-radius:99px;border:1px solid var(--line);color:var(--muted)}
+  .badge.ok{color:var(--ok)}
+  .main{flex:1;display:flex;min-height:0}
+  aside{width:250px;border-right:1px solid var(--line);background:var(--panel);padding:16px;overflow-y:auto}
+  aside h3{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin:14px 0 8px}
+  aside h3:first-child{margin-top:0}
+  .db{padding:9px 12px;border:1px solid var(--line);border-radius:9px;margin-bottom:8px;cursor:pointer;font-size:13px}
+  .db:hover{border-color:var(--accent)}
+  .db.active{border-color:var(--accent);background:rgba(56,189,248,.12)}
+  .db .n{font-weight:600}
+  .db .d{font-size:11px;color:var(--muted);margin-top:2px}
+  .chip{display:inline-block;font-size:11px;background:var(--panel2);border:1px solid var(--line);color:var(--muted);border-radius:6px;padding:2px 7px;margin:2px}
+  .chip.bad{color:var(--bad);text-decoration:line-through}
+  .guard{font-size:12px;color:var(--muted);line-height:1.9}
+  .guard b{color:var(--text)}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px}
+  .dot.ok{background:var(--ok)} .dot.warn{background:var(--warn)} .dot.bad{background:var(--bad)}
+  section{flex:1;display:flex;flex-direction:column;min-width:0}
+  .chat{flex:1;overflow-y:auto;padding:20px 24px;display:flex;flex-direction:column;gap:14px}
+  .msg{max-width:860px}
+  .msg.user{align-self:flex-end;background:var(--accent2);color:#0b1220;padding:10px 14px;border-radius:14px 14px 3px 14px;font-size:14px}
+  .msg.bot{align-self:flex-start;width:100%}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:14px 16px}
+  .card .top{display:flex;align-items:center;gap:10px;margin-bottom:10px;font-size:12px;color:var(--muted)}
+  .conf{margin-left:auto;display:flex;align-items:center;gap:7px}
+  .conf .bar{width:110px;height:6px;border-radius:99px;background:var(--panel2);overflow:hidden}
+  .conf .bar i{display:block;height:100%;border-radius:99px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin:6px 0 10px}
+  th{color:var(--muted);text-align:left;font-weight:600;border-bottom:1px solid var(--line);padding:6px 10px}
+  td{border-bottom:1px solid rgba(51,65,85,.55);padding:6px 10px}
+  tr:hover td{background:var(--panel2)}
+  .sql{background:#0b1220;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:12px/1.6 Consolas,monospace;color:#93c5fd;overflow-x:auto;white-space:pre}
+  .foot{display:flex;gap:14px;font-size:11px;color:var(--muted);margin-top:9px;flex-wrap:wrap}
+  .foot code{color:var(--accent)}
+  .alert{border-radius:11px;padding:11px 14px;font-size:13px;margin-bottom:8px;display:flex;gap:9px;align-items:flex-start;line-height:1.55}
+  .alert.bad{background:rgba(248,113,113,.12);border:1px solid rgba(248,113,113,.45)}
+  .alert.warn{background:rgba(251,191,36,.10);border:1px solid rgba(251,191,36,.40)}
+  .alert code{color:var(--text)}
+  .alert b{display:block;margin-bottom:2px}
+  .composer{border-top:1px solid var(--line);background:var(--panel);padding:14px 20px}
+  .samples{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+  .samples button{font-size:12px;background:var(--panel2);border:1px solid var(--line);color:var(--muted);border-radius:99px;padding:5px 12px;cursor:pointer}
+  .samples button:hover{color:var(--text);border-color:var(--accent)}
+  .inputrow{display:flex;gap:10px}
+  .inputrow input{flex:1;background:var(--panel2);border:1px solid var(--line);border-radius:11px;color:var(--text);padding:12px 15px;font-size:14px;outline:none}
+  .inputrow input:focus{border-color:var(--accent)}
+  .inputrow button{background:linear-gradient(135deg,var(--accent),var(--accent2));border:0;border-radius:11px;color:#0b1220;font-weight:700;padding:0 22px;cursor:pointer;font-size:14px}
+  .typing{display:inline-flex;gap:5px;padding:6px 2px;align-items:center}
+  .typing i{width:7px;height:7px;border-radius:50%;background:var(--muted);animation:bl 1.2s infinite}
+  .typing i:nth-child(2){animation-delay:.2s}.typing i:nth-child(3){animation-delay:.4s}
+  @keyframes bl{0%,80%,100%{opacity:.25}40%{opacity:1}}
+  .demo-note{font-size:11px;color:var(--muted);text-align:center;padding:6px}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">DS</div>
+  <div>
+    <h1>DataSpeak</h1>
+    <div class="sub">用自然语言安全查询公司数据库 · 交互原型 v0.3（M3）</div>
+  </div>
+  <div class="spacer"></div>
+  <span class="badge ok">● 引擎在线</span>
+  <span class="badge" id="qps">并发 2 / 10</span>
+  <span class="badge ok">● 熔断器 CLOSED</span>
+</header>
+
+<div class="main">
+  <aside>
+    <h3>目标数据库</h3>
+    <div class="db active" data-db="blog_small"><div class="n">📊 blog_small</div><div class="d">博客 · 4 表 · 演示库</div></div>
+    <div class="db" data-db="ecommerce_medium"><div class="n">🛒 ecommerce_medium</div><div class="d">电商 · 12 表 · 演示库</div></div>
+    <div class="db" data-db="saas_crm_large"><div class="n">🏢 saas_crm_large</div><div class="d">SaaS CRM · 30+ 表 · 生产脱敏</div></div>
+
+    <h3>安全护栏（全局策略）</h3>
+    <div class="guard">
+      <div><span class="dot ok"></span><b>只读执行</b> · 只读事务</div>
+      <div><span class="dot ok"></span><b>封锁表</b>：<span class="chip bad">audit_logs</span><span class="chip bad">user_credentials</span></div>
+      <div><span class="dot ok"></span><b>封锁列</b>：<span class="chip bad">password</span><span class="chip bad">users.email</span></div>
+      <div><span class="dot ok"></span><b>危险函数拦截</b>：pg_sleep 等 19 个</div>
+      <div><span class="dot ok"></span><b>EXPLAIN 策略</b>：已允许（计划诊断）</div>
+      <div><span class="dot ok"></span><b>行数上限</b>：10,000 行</div>
+    </div>
+
+    <h3>运行状态</h3>
+    <div class="guard">
+      <div><span class="dot ok"></span>查询限流：10 并发</div>
+      <div><span class="dot ok"></span>LLM 限流：5 并发</div>
+      <div><span class="dot ok"></span>重试：3 次 · 指数退避</div>
+      <div><span class="dot ok"></span>Prometheus :9090/metrics</div>
+    </div>
+  </aside>
+
+  <section>
+    <div class="chat" id="chat"></div>
+    <div class="composer">
+      <div class="samples">
+        <button data-q="最近30天注册的用户有多少？">最近30天注册用户数</button>
+        <button data-q="查看 audit_logs 里的操作记录">🔒 试着查封锁表</button>
+        <button data-q="列出所有用户的邮箱和密码">🔒 试着查封锁列</button>
+        <button data-q="每个分类的销售额排行">换到电商库再问</button>
+        <button data-q="让 LLM 返回一个不太确定的答案">⚠ 低置信度示例</button>
+      </div>
+      <div class="inputrow">
+        <input id="q" placeholder="用自然语言提问，例如：上周每天的订单量是多少？" onkeydown="if(event.key==='Enter')ask()">
+        <button onclick="ask()">查询</button>
+      </div>
+      <div class="demo-note">原型说明：本页面为前端演示，结果为模拟数据；后端能力由 w5/pg-mcp 提供（多库路由 / 安全策略 / 限流熔断 / request_id 追踪均已真实实现）。</div>
+    </div>
+  </section>
+</div>
+
+<script>
+const chat = document.getElementById('chat');
+let db = 'blog_small';
+let confMode = false;
+
+document.querySelectorAll('.db').forEach(el=>{
+  el.onclick=()=>{
+    document.querySelectorAll('.db').forEach(x=>x.classList.remove('active'));
+    el.classList.add('active'); db=el.dataset.db;
+    addBotCard('已切换目标库 <b>'+db+'</b>，后续提问将路由到该库的独立执行器（绝不串库）。', 100, null, 'SELECT 1; -- connection routed');
+  };
+});
+document.querySelectorAll('.samples button').forEach(b=>{ b.onclick=()=>{ document.getElementById('q').value=b.dataset.q; ask(); };});
+
+function esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
+
+function addUser(text){ const d=document.createElement('div'); d.className='msg user'; d.textContent=text; chat.appendChild(d); chat.scrollTop=chat.scrollHeight; }
+
+function addBotCard(html, conf, alertHtml, sql, reqPrefix){
+  const d=document.createElement('div'); d.className='msg bot';
+  const rid=(reqPrefix||'req')+'-'+Math.random().toString(16).slice(2,10);
+  let confHtml='';
+  if(conf!==null){
+    const confColor = conf>=85?'var(--ok)':conf>=70?'var(--warn)':'var(--bad)';
+    confHtml='<span class="conf"><span>置信度</span><span class="bar"><i style="width:'+conf+'%;background:'+confColor+'"></i></span><b style="color:'+confColor+'">'+conf+'</b></span>';
+  }
+  d.innerHTML =
+    (alertHtml||'') +
+    '<div class="card"><div class="top"><span>🎯 '+db+'</span>'+confHtml+'</div>'+
+    html +
+    (sql?'<div class="sql">'+esc(sql)+'</div>':'') +
+    '<div class="foot"><span>request_id: <code>'+rid+'</code></span><span>tokens_used: 0</span><span>耗时 '+(1+Math.random()*4).toFixed(1)+'s</span></div></div>';
+  chat.appendChild(d); chat.scrollTop=chat.scrollHeight;
+}
+
+async function ask(){
+  const input=document.getElementById('q');
+  const q=input.value.trim(); if(!q) return;
+  input.value='';
+  addUser(q);
+
+  const typing=document.createElement('div');
+  typing.className='msg bot card';
+  typing.innerHTML='<span class="typing"><i></i><i></i><i></i></span><span> 正在为 <b>'+db+'</b> 生成 SQL 并校验安全策略…</span>';
+  chat.appendChild(typing); chat.scrollTop=chat.scrollHeight;
+  await new Promise(r=>setTimeout(r,900));
+  typing.remove();
+
+  // 低置信度演示
+  if(q.includes('不太确定')){ confMode=!confMode; }
+  if(confMode && !q.includes('封锁') && !q.includes('audit')){
+    addBotCard(
+      '<table><tr><th>month</th><th>active_users</th></tr><tr><td>2026-09</td><td>1,203</td></tr><tr><td>2026-10</td><td>1,387</td></tr></table>',
+      62,
+      '<div class="alert warn">⚠️ <span><b>置信度偏低（62 &lt; 70）</b>"活跃用户"存在多种口径（登录/下单/访问），建议明确口径后重问，或切换到"仅生成 SQL"模式人工确认。</span></div>',
+      "SELECT date_trunc('month', last_login) AS month, COUNT(DISTINCT user_id) AS active_users\nFROM users GROUP BY 1 ORDER BY 1;"
+    );
+    return;
+  }
+
+  // 安全拦截演示
+  if(q.includes('audit_logs')){
+    addBotCard('', null,
+      '<div class="alert bad">🛡️ <span><b>安全护栏拦截（security_violation）</b>表 <code>audit_logs</code> 在本环境的封锁名单中（SECURITY_BLOCKED_TABLES）。如需访问请联系管理员走审批流程。拦截事件已计入 <code>pg_mcp_sql_rejected_total</code> 指标。</span></div>',
+      'SELECT * FROM audit_logs;  -- ❌ blocked table');
+    return;
+  }
+  if(q.includes('密码') || q.includes('邮箱')){
+    addBotCard('', null,
+      '<div class="alert bad">🛡️ <span><b>安全护栏拦截（security_violation）</b>命中封锁列：<code>users.email</code> / <code>password</code>（SECURITY_BLOCKED_COLUMNS）。敏感字段不支持自然语言查询。</span></div>',
+      'SELECT name, email, password FROM users;  -- ❌ blocked columns');
+    return;
+  }
+
+  // 正常成功路径
+  if(db==='ecommerce_medium'){
+    addBotCard(
+      '<table><tr><th>category</th><th>sales</th><th>orders</th></tr>'+
+      '<tr><td>数码办公</td><td>¥1,284,300</td><td>412</td></tr>'+
+      '<tr><td>家居生活</td><td>¥986,750</td><td>508</td></tr>'+
+      '<tr><td>服饰鞋包</td><td>¥733,210</td><td>655</td></tr>'+
+      '<tr><td>美妆个护</td><td>¥512,004</td><td>470</td></tr></table>',
+      94, null,
+      'SELECT c.name AS category, SUM(o.amount) AS sales, COUNT(*) AS orders\nFROM orders o JOIN products p ON o.product_id = p.id\nJOIN categories c ON p.category_id = c.id\nGROUP BY c.name ORDER BY sales DESC;');
+  } else {
+    addBotCard(
+      '<table><tr><th>date</th><th>new_users</th></tr>'+
+      '<tr><td>2026-10-01</td><td>46</td></tr><tr><td>2026-10-02</td><td>52</td></tr>'+
+      '<tr><td>2026-10-03</td><td>38</td></tr><tr><td>…</td><td>…</td></tr>'+
+      '<tr><td><b>合计</b></td><td><b>1,203</b></td></tr></table>',
+      96, null,
+      "SELECT DATE(created_at) AS date, COUNT(*) AS new_users\nFROM users\nWHERE created_at >= NOW() - INTERVAL '30 days'\nGROUP BY 1 ORDER BY 1;");
+  }
+}
+
+// 首屏欢迎
+addBotCard(
+  '<div style="font-size:14px;line-height:1.8">👋 试试在下方提问，或点击示例问题体验：<br>'+
+  '① 正常查数（返回数据 + SQL + 置信度 + request_id）<br>'+
+  '② 两个 🔒 示例 —— <b>安全护栏</b>如何拦截敏感表/列<br>'+
+  '③ 低置信度示例 —— 不可信结果如何被<b>明确标注</b></div>',
+  null, null, null, 'welcome');
+</script>
+</body>
+</html>

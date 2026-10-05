@@ -10,7 +10,12 @@ import pytest
 from pydantic import SecretStr
 
 from pg_mcp.config.settings import OpenAIConfig
-from pg_mcp.models.errors import LLMError, LLMTimeoutError, LLMUnavailableError
+from pg_mcp.models.errors import (
+    LLMError,
+    LLMTimeoutError,
+    LLMUnavailableError,
+    SecurityViolationError,
+)
 from pg_mcp.models.schema import (
     ColumnInfo,
     DatabaseSchema,
@@ -18,7 +23,89 @@ from pg_mcp.models.schema import (
     IndexInfo,
     TableInfo,
 )
+from pg_mcp.prompts.sql_generation import build_system_prompt
 from pg_mcp.services.sql_generator import SQLGenerator
+
+
+class TestAccessDeniedProtocol:
+    """LLM answers ACCESS_DENIED for blocked objects instead of substituting."""
+
+    @pytest.fixture
+    def generator(self) -> SQLGenerator:
+        config = OpenAIConfig(api_key=SecretStr("sk-test-key-12345"))
+        return SQLGenerator(config)
+
+    def test_access_denied_table_raises_friendly_error(self, generator: SQLGenerator) -> None:
+        """ACCESS_DENIED: <table> becomes a user-friendly SecurityViolation."""
+        denial = generator._extract_access_denial("ACCESS_DENIED: audit_logs")
+        assert denial is not None
+        message, details = denial
+        assert "audit_logs" in message
+        assert "没有权限" in message
+        assert details["access_denied"] is True
+
+    def test_access_denied_column_message(self, generator: SQLGenerator) -> None:
+        """Qualified blocked columns produce the column variant of the message."""
+        message, _details = generator._extract_access_denial("ACCESS_DENIED: users.email")
+        assert message is not None
+        assert "users.email" in message
+
+    def test_normal_sql_has_no_denial(self, generator: SQLGenerator) -> None:
+        """Regular SQL content is not mistaken for a denial."""
+        assert generator._extract_access_denial("```sql\nSELECT 1;\n```") is None
+
+    @pytest.mark.asyncio
+    async def test_generate_raises_security_violation_on_denial(
+        self, generator: SQLGenerator
+    ) -> None:
+        """A full generate() call converts the denial into SecurityViolationError."""
+        schema = DatabaseSchema(
+            database_name="blog_small",
+            tables=[
+                TableInfo(
+                    schema_name="public",
+                    table_name="users",
+                    columns=[
+                        ColumnInfo(
+                            name="id",
+                            data_type="integer",
+                            is_nullable=False,
+                            is_primary_key=True,
+                        ),
+                        ColumnInfo(name="username", data_type="varchar(50)", is_nullable=False),
+                    ],
+                )
+            ],
+            version="16",
+        )
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "ACCESS_DENIED: audit_logs"
+        with patch.object(
+            generator.client.chat.completions,
+            "create",
+            new=AsyncMock(return_value=mock_response),
+        ), pytest.raises(SecurityViolationError) as exc_info:
+            await generator.generate(
+                question="查看 audit_logs 表的全部记录",
+                schema=schema,
+                security_policy="Blocked tables:\n- audit_logs",
+            )
+        assert "audit_logs" in str(exc_info.value)
+
+
+class TestSystemPromptPolicy:
+    """Security policy is appended to the system prompt when configured."""
+
+    def test_policy_appended(self) -> None:
+        prompt = build_system_prompt("Blocked tables:\n- audit_logs")
+        assert "Access Restrictions" in prompt
+        assert "audit_logs" in prompt
+
+    def test_no_policy_keeps_base_prompt(self) -> None:
+        from pg_mcp.prompts.sql_generation import SQL_GENERATION_SYSTEM_PROMPT
+
+        assert build_system_prompt(None) == SQL_GENERATION_SYSTEM_PROMPT
 
 
 class TestSQLExtraction:

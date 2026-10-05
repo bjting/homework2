@@ -56,6 +56,7 @@ class ResultValidator:
         self.client = AsyncOpenAI(
             api_key=openai_config.api_key.get_secret_value(),
             timeout=validation_config.timeout_seconds,
+            base_url=openai_config.base_url,
         )
 
     async def validate(
@@ -124,7 +125,9 @@ class ResultValidator:
                     {"role": "system", "content": RESULT_VALIDATION_SYSTEM_PROMPT},
                     {"role": "user", "content": prompt},
                 ],
-                max_tokens=500,
+                # 2000 (not 500): reasoning models spend tokens thinking before
+                # answering; a tight cap yields empty content and degrades validation
+                max_tokens=2000,
                 temperature=0.0,  # Use deterministic output for validation
                 response_format={"type": "json_object"},  # Ensure JSON response
             )
@@ -146,14 +149,20 @@ class ResultValidator:
             # Parse JSON response
             try:
                 result_dict = json.loads(content)
-            except json.JSONDecodeError as e:
-                # If JSON parsing fails, return moderate confidence with error explanation
-                return ResultValidationResult(
-                    confidence=60,
-                    explanation=f"Validation response parsing failed: {e!s}",
-                    suggestion="Unable to parse LLM response, manual verification recommended",
-                    is_acceptable=False,
-                )
+            except json.JSONDecodeError:
+                # Reasoning models often wrap the JSON in prose or code fences;
+                # extract the outermost {...} block before giving up
+                json_blob = content[content.find("{") : content.rfind("}") + 1]
+                try:
+                    result_dict = json.loads(json_blob)
+                except json.JSONDecodeError as e:
+                    # If JSON parsing fails, return moderate confidence with error explanation
+                    return ResultValidationResult(
+                        confidence=60,
+                        explanation=f"Validation response parsing failed: {e!s}",
+                        suggestion="Unable to parse LLM response, manual verification recommended",
+                        is_acceptable=False,
+                    )
 
             # Extract fields from response
             confidence = result_dict.get("confidence", 50)

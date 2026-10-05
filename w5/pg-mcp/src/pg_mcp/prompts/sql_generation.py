@@ -38,6 +38,24 @@ WHERE created_at >= CURRENT_DATE - INTERVAL '7 days';
 """
 
 
+def build_system_prompt(security_policy: str | None = None) -> str:
+    """Build the system prompt, optionally with access restrictions appended.
+
+    Args:
+        security_policy: Description of blocked tables/columns and the
+            ACCESS_DENIED protocol. None means no restrictions configured.
+
+    Returns:
+        str: Complete system prompt for the SQL generation model.
+    """
+    if not security_policy:
+        return SQL_GENERATION_SYSTEM_PROMPT
+    return (
+        f"{SQL_GENERATION_SYSTEM_PROMPT}\n\n"
+        f"## Access Restrictions (MUST follow):\n{security_policy}\n"
+    )
+
+
 def build_user_prompt(
     question: str,
     schema: "DatabaseSchema",

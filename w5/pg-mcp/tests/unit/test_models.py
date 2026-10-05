@@ -371,6 +371,62 @@ class TestQueryResponse:
         assert response.data is None
 
 
+class TestQueryResponseToDict:
+    """Tests for the canonical QueryResponse.to_dict serialization.
+
+    Guards against regression of the duplicate-to_dict defect where a second
+    definition silently overrode the first.
+    """
+
+    def test_to_dict_always_includes_tokens_used(self) -> None:
+        """tokens_used defaults to 0 when no LLM tokens were consumed."""
+        from pg_mcp.models.query import ErrorDetail
+
+        # Error responses (no LLM usage recorded)
+        error_response = QueryResponse(
+            success=False,
+            error=ErrorDetail(code="sql_parse_error", message="bad"),
+        )
+        assert error_response.to_dict()["tokens_used"] == 0
+
+        # Success without tokens
+        ok_response = QueryResponse(success=True, generated_sql="SELECT 1")
+        assert ok_response.to_dict()["tokens_used"] == 0
+
+    def test_to_dict_preserves_tokens_used_when_present(self) -> None:
+        """Explicit tokens_used values are preserved."""
+        response = QueryResponse(success=True, generated_sql="SELECT 1", tokens_used=150)
+        assert response.to_dict()["tokens_used"] == 150
+
+    def test_to_dict_omits_none_fields(self) -> None:
+        """None fields are omitted instead of serialized as null."""
+        response = QueryResponse(success=True, generated_sql="SELECT 1")
+        d = response.to_dict()
+        assert "data" not in d
+        assert "error" not in d
+        assert "validation" not in d
+        assert d["success"] is True
+        assert d["generated_sql"] == "SELECT 1"
+
+    def test_to_dict_includes_request_id_when_set(self) -> None:
+        """request_id is serialized for end-to-end tracing."""
+        response = QueryResponse(
+            success=True,
+            request_id="req-123",
+            generated_sql="SELECT 1",
+        )
+        assert response.to_dict()["request_id"] == "req-123"
+
+    def test_to_dict_is_the_only_serialization(self) -> None:
+        """There is exactly one to_dict implementation on QueryResponse."""
+        impls = [
+            value
+            for value in QueryResponse.__dict__.values()
+            if callable(value) and getattr(value, "__name__", "") == "to_dict"
+        ]
+        assert len(impls) == 1
+
+
 class TestErrorModels:
     """Tests for error models."""
 

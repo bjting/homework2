@@ -5,13 +5,16 @@ It ensures that only safe, read-only queries are executed and blocks potentially
 dangerous operations.
 """
 
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 import sqlglot
 from sqlglot import exp
 
 from pg_mcp.config.settings import SecurityConfig
 from pg_mcp.models.errors import SecurityViolationError, SQLParseError
+
+if TYPE_CHECKING:
+    from pg_mcp.models.schema import DatabaseSchema
 
 
 class SQLValidator:
@@ -26,13 +29,16 @@ class SQLValidator:
     """
 
     # Allowed statement types at the top level (including set operations)
-    ALLOWED_STATEMENT_TYPES: ClassVar = {
-        exp.Select, exp.Union, exp.Intersect, exp.Except
-    }
+    ALLOWED_STATEMENT_TYPES: ClassVar = {exp.Select, exp.Union, exp.Intersect, exp.Except}
 
     # Allowed top-level expressions (including CTEs)
     ALLOWED_TOP_LEVEL: ClassVar = {
-        exp.Select, exp.Union, exp.Intersect, exp.Except, exp.With, exp.Subquery
+        exp.Select,
+        exp.Union,
+        exp.Intersect,
+        exp.Except,
+        exp.With,
+        exp.Subquery,
     }
 
     # Forbidden statement types
@@ -74,6 +80,9 @@ class SQLValidator:
         "copy_to",
     }
 
+    # DML statement types (conditionally allowed via allow_write_operations)
+    DML_STATEMENT_TYPES: ClassVar = {exp.Insert, exp.Update, exp.Delete, exp.Merge}
+
     def __init__(
         self,
         config: SecurityConfig,
@@ -99,26 +108,36 @@ class SQLValidator:
             f.lower() for f in config.blocked_functions
         }
 
-    def validate(self, sql: str) -> tuple[bool, str | None]:
+    def validate(
+        self,
+        sql: str,
+        schema: "DatabaseSchema | None" = None,
+    ) -> tuple[bool, str | None]:
         """Validate SQL query for security compliance.
 
         Args:
             sql: SQL query string to validate.
+            schema: Optional live database schema (enables bare-column
+                resolution for blocked-column checks).
 
         Returns:
             Tuple of (is_valid, error_message). If valid, error_message is None.
         """
         try:
-            self.validate_or_raise(sql)
+            self.validate_or_raise(sql, schema=schema)
             return (True, None)
         except (SecurityViolationError, SQLParseError) as e:
             return (False, str(e))
 
-    def validate_or_raise(self, sql: str) -> None:
+    def validate_or_raise(self, sql: str, schema: "DatabaseSchema | None" = None) -> None:
         """Validate SQL query and raise exception on violation.
 
         Args:
             sql: SQL query string to validate.
+            schema: Optional live database schema. When provided, bare column
+                references (no table prefix) can be resolved to their owning
+                tables, closing the bare-column bypass of qualified blocks
+                (e.g. ``SELECT email FROM users`` vs blocked ``users.email``).
 
         Raises:
             SQLParseError: If SQL cannot be parsed.
@@ -187,7 +206,10 @@ class SQLValidator:
         if error := self._check_blocked_tables(statement):
             raise SecurityViolationError(error)
 
-        if error := self._check_blocked_columns(statement):
+        if error := self._check_star_access(statement):
+            raise SecurityViolationError(error)
+
+        if error := self._check_blocked_columns(statement, schema):
             raise SecurityViolationError(error)
 
         if error := self._check_subquery_safety(statement):
@@ -202,18 +224,33 @@ class SQLValidator:
         Returns:
             Error message if check fails, None otherwise.
         """
+        # When write operations are explicitly allowed via config, DML
+        # (INSERT/UPDATE/DELETE/MERGE) passes validation; DDL and admin
+        # statements always remain forbidden. The executor correspondingly
+        # opens a writable transaction only when this flag is set.
+        forbidden_types = self.FORBIDDEN_STATEMENT_TYPES
+        if self.config.allow_write_operations:
+            forbidden_types = forbidden_types - self.DML_STATEMENT_TYPES
+
         # Check for forbidden statement types
-        for forbidden_type in self.FORBIDDEN_STATEMENT_TYPES:
+        for forbidden_type in forbidden_types:
             if isinstance(statement, forbidden_type):
                 stmt_name = forbidden_type.__name__.upper()
                 return f"{stmt_name} statements are not allowed. Only SELECT queries are permitted."
 
-        # Ensure statement is an allowed type (SELECT or set operations)
-        if not isinstance(statement, tuple(self.ALLOWED_STATEMENT_TYPES)):
-            stmt_type = type(statement).__name__
-            return f"Statement type {stmt_type} is not allowed. Only SELECT queries are permitted."
+        # Ensure statement is an allowed type (SELECT, set operations, or
+        # permitted DML when writes are enabled)
+        if isinstance(statement, tuple(self.ALLOWED_STATEMENT_TYPES)):
+            return None
 
-        return None
+        if isinstance(statement, tuple(self.DML_STATEMENT_TYPES)):
+            if self.config.allow_write_operations:
+                return None
+            stmt_name = type(statement).__name__.upper()
+            return f"{stmt_name} statements are not allowed. Only SELECT queries are permitted."
+
+        stmt_type = type(statement).__name__
+        return f"Statement type {stmt_type} is not allowed. Only SELECT queries are permitted."
 
     def _check_dangerous_functions(self, statement: exp.Expression) -> str | None:
         """Check for use of blocked/dangerous functions.
@@ -250,12 +287,18 @@ class SQLValidator:
             table_name = table.name.lower() if table.name else ""
 
             if table_name in self.blocked_tables:
-                return f"Access to table '{table_name}' is not allowed"
+                return (
+                    f'您没有权限查看表 "{table_name}"：该表已被管理员列为受保护对象，'
+                    "无法查询其内容。如需访问，请联系管理员申请权限。"
+                )
 
         return None
 
-    def _check_blocked_columns(self, statement: exp.Expression) -> str | None:
-        """Check for access to blocked columns.
+    def _check_star_access(self, statement: exp.Expression) -> str | None:
+        """Block ``SELECT *`` when column restrictions are configured.
+
+        ``SELECT *`` produces no column nodes, so without this check it would
+        silently bypass blocked_columns and leak sensitive columns.
 
         Args:
             statement: Parsed SQL statement.
@@ -266,19 +309,100 @@ class SQLValidator:
         if not self.blocked_columns:
             return None
 
+        for _star in statement.find_all(exp.Star):
+            return (
+                "当前环境已启用敏感列保护，不允许使用 SELECT *；"
+                "请在查询中明确列出所需的列（不含受限列）。"
+            )
+        return None
+
+    def _build_alias_map(self, statement: exp.Expression) -> dict[str, str]:
+        """Build a mapping of table alias -> real table name.
+
+        Found in FROM/JOIN clauses, e.g. ``FROM users u`` yields ``{"u": "users"}``.
+        Needed because column nodes reference the alias, so a blocked qualified
+        name like ``users.email`` would otherwise be bypassed via ``u.email``.
+
+        Args:
+            statement: Parsed SQL statement.
+
+        Returns:
+            dict[str, str]: Alias (lowercase) to real table name (lowercase).
+        """
+        aliases: dict[str, str] = {}
+        for table in statement.find_all(exp.Table):
+            if table.alias and table.name:
+                aliases[table.alias.lower()] = table.name.lower()
+        return aliases
+
+    def _check_blocked_columns(
+        self,
+        statement: exp.Expression,
+        schema: "DatabaseSchema | None" = None,
+    ) -> str | None:
+        """Check for access to blocked columns.
+
+        Column references are resolved through table aliases before matching,
+        so ``SELECT u.email FROM users u`` is caught by a ``users.email`` block.
+        When a schema is provided, bare columns (no table prefix) are resolved
+        to their owning tables, so ``SELECT email FROM users`` is caught too.
+
+        Args:
+            statement: Parsed SQL statement.
+            schema: Optional live database schema for bare-column resolution.
+
+        Returns:
+            Error message if check fails, None otherwise.
+        """
+        if not self.blocked_columns:
+            return None
+
+        alias_map = self._build_alias_map(statement)
+
+        def blocked_column_message(qualified: str) -> str:
+            """User-facing message for a blocked column reference."""
+            return (
+                f'您没有权限查看列 "{qualified}"：该列已被管理员列为敏感数据，'
+                "不会出现在查询结果中。请调整问题，改查其他列。"
+            )
+
+        # table name (lowercase) -> set of column names (lowercase)
+        schema_columns: dict[str, set[str]] = {}
+        if schema is not None:
+            for table in schema.tables:
+                schema_columns[table.table_name.lower()] = {
+                    col.name.lower() for col in table.columns
+                }
+
         # Find all column references
         for column in statement.find_all(exp.Column):
             column_name = column.name.lower() if column.name else ""
+            if not column_name:
+                continue
 
-            # Check for exact match
+            # Check for exact match (bare blocked column, e.g. "password")
             if column_name in self.blocked_columns:
-                return f"Access to column '{column_name}' is not allowed"
+                return blocked_column_message(column_name)
 
-            # Check for qualified column names (table.column)
+            # Check qualified names, resolving aliases to real table names
             if column.table:
-                qualified_name = f"{column.table.lower()}.{column_name}"
-                if qualified_name in self.blocked_columns:
-                    return f"Access to column '{qualified_name}' is not allowed"
+                table_ref = column.table.lower()
+                real_table = alias_map.get(table_ref, table_ref)
+                if real_table != table_ref and f"{table_ref}.{column_name}" in self.blocked_columns:
+                    return blocked_column_message(f"{table_ref}.{column_name}")
+                if f"{real_table}.{column_name}" in self.blocked_columns:
+                    return blocked_column_message(f"{real_table}.{column_name}")
+            elif schema_columns:
+                # Bare column with no table reference: it can only belong to
+                # tables named in this statement's FROM/JOIN clauses
+                from_tables = {t.name.lower() for t in statement.find_all(exp.Table) if t.name}
+                for table_name in from_tables:
+                    columns = schema_columns.get(table_name, set())
+                    if (
+                        column_name in columns
+                        and f"{table_name}.{column_name}" in self.blocked_columns
+                    ):
+                        return blocked_column_message(f"{table_name}.{column_name}")
 
         return None
 

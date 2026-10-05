@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>DataSpeak 产品介绍</title>
+<style>
+  :root{--bg:#0b1220;--panel:#111c33;--text:#e8eefc;--muted:#8ea0c0;--accent:#38bdf8;--accent2:#818cf8;--ok:#34d399;--bad:#f87171}
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%;background:var(--bg);color:var(--text);font-family:"Segoe UI","Microsoft YaHei",sans-serif;overflow:hidden}
+  .slide{position:absolute;inset:0;display:none;flex-direction:column;justify-content:center;padding:70px 90px}
+  .slide.active{display:flex}
+  .slide::before{content:"";position:absolute;inset:0;background:radial-gradient(700px 400px at 85% 15%,rgba(129,140,248,.14),transparent),radial-gradient(600px 380px at 10% 90%,rgba(56,189,248,.10),transparent);pointer-events:none}
+  .slide>*{position:relative;z-index:1}
+  h1{font-size:56px;line-height:1.2;background:linear-gradient(120deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;color:transparent}
+  h2{font-size:38px;margin-bottom:34px}
+  .kicker{font-size:14px;letter-spacing:.25em;color:var(--accent);text-transform:uppercase;margin-bottom:16px;font-weight:700}
+  p.lead{font-size:19px;color:var(--muted);line-height:1.9;max-width:900px}
+  .grid{display:grid;gap:18px}
+  .g2{grid-template-columns:1fr 1fr}.g3{grid-template-columns:1fr 1fr 1fr}.g4{grid-template-columns:repeat(4,1fr)}
+  .card{background:var(--panel);border:1px solid rgba(148,163,184,.16);border-radius:16px;padding:24px}
+  .card h4{font-size:17px;margin-bottom:9px}
+  .card p{font-size:13.5px;color:var(--muted);line-height:1.75}
+  .card .ico{font-size:26px;margin-bottom:10px}
+  .num{font-size:44px;font-weight:800;background:linear-gradient(120deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .num-l{font-size:13px;color:var(--muted);margin-top:6px}
+  .flow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:14px}
+  .step{background:var(--panel);border:1px solid rgba(148,163,184,.2);border-radius:10px;padding:10px 16px}
+  .step.sec{border-color:rgba(52,211,153,.5)}
+  .arrow{color:var(--accent);font-size:18px}
+  code,.mono{font-family:Consolas,monospace}
+  .tag{display:inline-block;font-size:12px;border:1px solid rgba(56,189,248,.45);color:var(--accent);border-radius:99px;padding:3px 12px;margin:3px}
+  .footer{position:absolute;bottom:26px;left:90px;right:90px;display:flex;justify-content:space-between;font-size:12px;color:var(--muted);z-index:1}
+  .pageno{position:absolute;bottom:26px;right:90px;font-size:12px;color:var(--muted);z-index:1}
+  table{border-collapse:collapse;width:100%;font-size:15px}
+  th,td{border-bottom:1px solid rgba(148,163,184,.18);padding:11px 14px;text-align:left}
+  th{color:var(--muted);font-size:13px}
+  .ok{color:var(--ok)} .bad{color:var(--bad)}
+  .center{text-align:center}
+</style>
+</head>
+<body>
+
+<!-- 1 封面 -->
+<section class="slide active">
+  <div class="kicker">AI Bootcamp · W5 产品岗交付</div>
+  <h1>DataSpeak</h1>
+  <h1 style="font-size:40px">让团队用一句话，安全地查遍公司数据库</h1>
+  <p class="lead" style="margin-top:26px">自然语言 → SQL → 只读执行 → 可信答案。<br>基于 pg-mcp 引擎：只读护栏 · 敏感对象封锁 · 多库路由 · 限流熔断 · 全链路追踪。</p>
+  <div style="margin-top:30px">
+    <span class="tag">自然语言查数</span><span class="tag">安全护栏</span><span class="tag">多数据库</span>
+    <span class="tag">置信度标注</span><span class="tag">Prometheus 可观测</span>
+  </div>
+  <div class="footer"><span>DataSpeak</span><span>← → 键翻页</span></div>
+</section>
+
+<!-- 2 痛点 -->
+<section class="slide">
+  <div class="kicker">Problem</div>
+  <h2>查个数，为什么要等半天？</h2>
+  <div class="grid g3">
+    <div class="card"><div class="ico">🙋</div><h4>业务同学</h4><p>"上周复购率多少？"——提需求、进排期、等半天，拿到数口径还对不上。</p></div>
+    <div class="card"><div class="ico">🧑‍💻</div><h4>数据分析师</h4><p>每天被"帮我拉个数"打断 20 次，真正复杂的分析反而没时间做。</p></div>
+    <div class="card"><div class="ico">🛡️</div><h4>DBA / 管理员</h4><p>想开放数据又怕出事：误删、慢查询拖垮库、敏感表被翻。</p></div>
+  </div>
+  <p class="lead" style="margin-top:30px">LLM 已能把「schema + 自然语言」可靠地翻译成 SQL —— 缺的是一个<b style="color:var(--text)">安全、可信、可管理</b>的落地通道。</p>
+</section>
+
+<!-- 3 方案 -->
+<section class="slide">
+  <div class="kicker">Solution</div>
+  <h2>DataSpeak：一条安全的数据问答流水线</h2>
+  <div class="flow" style="margin-bottom:28px">
+    <span class="step">🗣️ 自然语言提问</span><span class="arrow">→</span>
+    <span class="step">🧠 LLM 生成 SQL<br><small style="color:var(--muted)">校验失败自动带反馈重试</small></span><span class="arrow">→</span>
+    <span class="step sec">🛡️ 安全校验<br><small style="color:var(--muted)">只读/封锁表列/危险函数</small></span><span class="arrow">→</span>
+    <span class="step">📦 只读执行<br><small style="color:var(--muted)">超时+行数上限</small></span><span class="arrow">→</span>
+    <span class="step">✅ 结果校验<br><small style="color:var(--muted)">置信度评分</small></span><span class="arrow">→</span>
+    <span class="step">📊 答案+SQL+追踪ID</span>
+  </div>
+  <div class="grid g2">
+    <div class="card"><h4>对提问的人</h4><p>30 秒自助拿数，附生成 SQL 与置信度 —— 每个数字可复核、可追溯（request_id 贯穿全链路日志）。</p></div>
+    <div class="card"><h4>对管理员</h4><p>封锁表/列清单化、只读事务、限流熔断、Prometheus 指标 —— 开放数据，风险可控。</p></div>
+  </div>
+</section>
+
+<!-- 4 核心能力 -->
+<section class="slide">
+  <div class="kicker">Key Features</div>
+  <h2>四个"说到做到"的核心能力</h2>
+  <div class="grid g4">
+    <div class="card"><div class="ico">🗣️</div><h4>自然语言查数</h4><p>基于库 schema 生成 SQL，支持"仅出 SQL"模式供分析师二次加工。</p></div>
+    <div class="card"><div class="ico">🗄️</div><h4>多库一体</h4><p>一个入口查多个库，按请求精确路由，绝不串库；未指定且多库时明确提示。</p></div>
+    <div class="card"><div class="ico">🛡️</div><h4>安全护栏</h4><p>封锁表/封锁列/危险函数/只读事务四道闸，命中即拒绝并说明原因。</p></div>
+    <div class="card"><div class="ico">📈</div><h4>生产可观测</h4><p>请求量/延迟/拦截/Token 指标 + 限流排队 + 熔断自愈 + 退避重试。</p></div>
+  </div>
+  <p class="lead" style="margin-top:26px">以上能力均已实现并有 <b style="color:var(--text)">297 个自动化测试</b>守护（w5 研发交付）。</p>
+</section>
+
+<!-- 5 安全护栏细节 -->
+<section class="slide">
+  <div class="kicker">Security by Default</div>
+  <h2>护栏不是口号，是四道闸</h2>
+  <table>
+    <tr><th>闸门</th><th>机制</th><th>示例</th></tr>
+    <tr><td>① 语句白名单</td><td>SQL 解析后仅放行 SELECT（写操作需显式开启，DDL 恒禁）</td><td class="bad">DELETE FROM users → 拒绝</td></tr>
+    <tr><td>② 敏感对象封锁</td><td><code>SECURITY_BLOCKED_TABLES / _COLUMNS</code>（支持 table.column 精确封锁）</td><td class="bad">SELECT password → 拒绝</td></tr>
+    <tr><td>③ 危险函数拦截</td><td>pg_sleep / 文件读写 / dblink 等 19+ 函数黑名单</td><td class="bad">SELECT pg_sleep(100) → 拒绝</td></tr>
+    <tr><td>④ 执行层兜底</td><td>只读事务 + search_path 锁定 + 超时/行数上限 + 可选只读角色</td><td class="ok">漏网之鱼也写不进库</td></tr>
+  </table>
+  <p class="lead" style="margin-top:24px">拦截事件计入 <code>pg_mcp_sql_rejected_total</code> 指标 —— 谁在试探、试了什么，一目了然。</p>
+</section>
+
+<!-- 6 可信 -->
+<section class="slide">
+  <div class="kicker">Trustworthy Answers</div>
+  <h2>每个答案都自带"成分表"</h2>
+  <div class="grid g3">
+    <div class="card center"><div class="num">SQL</div><div class="num-l">生成语句全透明，口径可人工复核</div></div>
+    <div class="card center"><div class="num">0-100</div><div class="num-l">置信度评分，&lt;70 黄色警示并给出口径建议</div></div>
+    <div class="card center"><div class="num mono">request_id</div><div class="num-l">追踪 ID 贯穿生成→校验→执行日志，审计零成本</div></div>
+  </div>
+  <p class="lead" style="margin-top:30px">设计哲学：<b style="color:var(--text)">不确定就明说</b>—— 模糊口径的问题不会被包装成确定答案。</p>
+</section>
+
+<!-- 7 架构 -->
+<section class="slide">
+  <div class="kicker">Architecture</div>
+  <h2>引擎架构（pg-mcp）</h2>
+  <div class="flow" style="margin-bottom:26px">
+    <span class="step">MCP 客户端 / Web 前端</span><span class="arrow">→</span>
+    <span class="step">Server（FastMCP）</span><span class="arrow">→</span>
+    <span class="step">Orchestrator 编排器<br><small style="color:var(--muted)">追踪·限流·重试·指标</small></span>
+  </div>
+  <div class="flow" style="margin-bottom:26px">
+    <span class="step">SQLGenerator（LLM）</span>
+    <span class="arrow">⇄</span>
+    <span class="step">SQLValidator（安全策略）</span>
+    <span class="arrow">→</span>
+    <span class="step">SQLExecutor ×N<br><small style="color:var(--muted)">每库一个 · 只读事务</small></span>
+    <span class="arrow">→</span>
+    <span class="step">PostgreSQL ×N</span>
+  </div>
+  <div class="grid g3">
+    <div class="card"><h4>弹性层</h4><p>双层令牌限流（请求/LLM）、指数退避、熔断器 —— 坏天气降级不雪崩。</p></div>
+    <div class="card"><h4>观测层</h4><p>Prometheus 指标 + request_id 上下文贯穿 + JSON 日志脱敏。</p></div>
+    <div class="card"><h4>配置层</h4><p>多库 JSON 声明、安全策略、限流参数全部环境变量驱动。</p></div>
+  </div>
+</section>
+
+<!-- 8 演示 -->
+<section class="slide">
+  <div class="kicker">Demo</div>
+  <h2>30 秒体验（打开 prototype.html）</h2>
+  <div class="grid g2">
+    <div class="card"><h4>① 正常查数</h4><p>"最近30天注册用户多少？" → 数据表 + SQL + 置信度 96 + request_id。</p></div>
+    <div class="card"><h4>② 试探敏感表</h4><p>"查看 audit_logs 记录" → 红色拦截卡：封锁表 + 违规代码 + 已计入指标。</p></div>
+    <div class="card"><h4>③ 模糊口径</h4><p>"活跃用户趋势" → 置信度 62 黄色警示：列出口径歧义，建议澄清后重问。</p></div>
+    <div class="card"><h4>④ 切库再问</h4><p>切到电商库问"分类销售额" → 路由到电商执行器，口径隔离零串库。</p></div>
+  </div>
+</section>
+
+<!-- 9 指标 -->
+<section class="slide">
+  <div class="kicker">Success Metrics</div>
+  <h2>我们怎么衡量成功</h2>
+  <div class="grid g4">
+    <div class="card center"><div class="num">≥90%</div><div class="num-l">提问→拿答案完成率</div></div>
+    <div class="card center"><div class="num">≥80%</div><div class="num-l">结果采纳率（高置信且未追问）</div></div>
+    <div class="card center"><div class="num">-60%</div><div class="num-l">数据团队被打断次数</div></div>
+    <div class="card center"><div class="num">100%</div><div class="num-l">安全拦截准确率（宁拦勿漏）</div></div>
+  </div>
+  <p class="lead" style="margin-top:30px">技术侧同款标尺：P50 ≤ 8s · 并发 ≥ 10/库 · 熔断恢复全自动 —— 均已在压测指标与 CI 中落地。</p>
+</section>
+
+<!-- 10 路线图 -->
+<section class="slide">
+  <div class="kicker">Roadmap</div>
+  <h2>从引擎到平台</h2>
+  <div class="grid g4">
+    <div class="card"><h4>M1 ✅ 核心引擎</h4><p>NL→SQL、安全校验、只读执行（pg-mcp）。</p></div>
+    <div class="card"><h4>M2 ✅ 生产化</h4><p>多库路由、限流/熔断/退避、指标追踪、297 测试守护。</p></div>
+    <div class="card"><h4>M3 🚧 Web 界面</h4><p>交互原型已出，灰度 10 名种子用户。</p></div>
+    <div class="card"><h4>M4 📅 体验增强</h4><p>图表化、收藏报表、结果解读、EXPLAIN 诊断。</p></div>
+  </div>
+</section>
+
+<!-- 11 结尾 -->
+<section class="slide">
+  <div class="kicker">Deliverables · W5</div>
+  <h2 style="font-size:46px">让数据开口说话，<br>让风险有闸可守。</h2>
+  <div class="grid g3" style="margin-top:34px;max-width:1050px">
+    <div class="card"><h4>🔧 研发岗</h4><p>codex review 三项缺失功能落地 + 297 测试（<code>w5/pg-mcp</code>，见 CODEX_REVIEW_FIXES.md）</p></div>
+    <div class="card"><h4>🧪 测试岗</h4><p>用例矩阵 · pytest/CI 自动化 · 部署与验收方案（<code>w5/test-engineer/</code>）</p></div>
+    <div class="card"><h4>🎨 产品岗</h4><p>PRD · 交互原型 · 本介绍文稿（<code>w5/product-manager/</code>）</p></div>
+  </div>
+  <p class="lead" style="margin-top:30px">Thank you · Q&amp;A</p>
+  <div class="footer"><span>DataSpeak</span><span>← → 键翻页</span></div>
+</section>
+
+<div class="pageno" id="pageno">1 / 11</div>
+<script>
+const slides=[...document.querySelectorAll('.slide')];let i=0;
+function show(n){slides[i].classList.remove('active');i=(n+slides.length)%slides.length;slides[i].classList.add('active');document.getElementById('pageno').textContent=(i+1)+' / '+slides.length;}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight'||e.key==='PageDown'||e.key===' ')show(i+1);if(e.key==='ArrowLeft'||e.key==='PageUp')show(i-1);});
+document.addEventListener('click',e=>{if(!e.target.closest('a,button'))show(i+1);});
+</script>
+</body>
+</html>

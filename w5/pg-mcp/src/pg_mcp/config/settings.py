@@ -3,11 +3,22 @@
 This module defines all configuration settings using Pydantic for validation
 and type safety. Configuration is loaded from environment variables with
 sensible defaults.
+
+Multi-database support:
+    The primary database is configured via ``DATABASE_*`` environment
+    variables. Additional databases can be declared with the
+    ``EXTRA_DATABASES`` environment variable as a JSON array, e.g.::
+
+        EXTRA_DATABASES=[{"name": "warehouse", "host": "db.internal"}]
+
+    Extra databases inherit any connection field that is omitted from their
+    JSON entry (falling back to the ``DATABASE_*`` defaults).
 """
 
+import json
 from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -49,8 +60,14 @@ class OpenAIConfig(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="OPENAI_")
 
     api_key: SecretStr = Field(default=SecretStr(""), description="OpenAI API key")
+    base_url: str | None = Field(
+        default=None,
+        description="OpenAI-compatible API base URL for relay/proxy endpoints (None = official)",
+    )
     model: str = Field(default="gpt-4o-mini", description="Model to use for SQL generation")
-    max_tokens: int = Field(default=2000, ge=100, le=4096, description="Maximum tokens in response")
+    max_tokens: int = Field(
+        default=2000, ge=100, le=128000, description="Maximum tokens in response"
+    )
     temperature: float = Field(
         default=0.0, ge=0.0, le=2.0, description="Temperature for response randomness"
     )
@@ -78,7 +95,12 @@ class SecurityConfig(BaseSettings):
     allow_write_operations: bool = Field(
         default=False, description="Allow write operations (INSERT, UPDATE, DELETE)"
     )
-    blocked_functions: list[str] = Field(
+    # NOTE: annotated as `str | list[str]` on purpose. pydantic-settings treats
+    # plain list fields as "complex" and JSON-decodes env values itself, which
+    # rejects the comma-separated format documented in .env.example before our
+    # validator can run. A union type is not "complex", so the raw string
+    # reaches parse_string_list below. After validation the value is a list.
+    blocked_functions: str | list[str] = Field(
         default_factory=lambda: [
             "pg_sleep",
             "pg_read_file",
@@ -87,6 +109,18 @@ class SecurityConfig(BaseSettings):
             "lo_export",
         ],
         description="List of blocked PostgreSQL functions",
+    )
+    blocked_tables: str | list[str] = Field(
+        default_factory=list,
+        description="Tables that queries may not access (sensitive objects)",
+    )
+    blocked_columns: str | list[str] = Field(
+        default_factory=list,
+        description="Columns that queries may not access (accepts 'column' or 'table.column')",
+    )
+    allow_explain: bool = Field(
+        default=False,
+        description="Allow EXPLAIN statements (read-only query plan inspection)",
     )
     max_rows: int = Field(default=10000, ge=1, le=100000, description="Maximum rows to return")
     max_execution_time: float = Field(
@@ -99,13 +133,41 @@ class SecurityConfig(BaseSettings):
         default="public", description="Safe search_path to set during query execution"
     )
 
-    @field_validator("blocked_functions", mode="before")
+    @field_validator("blocked_functions", "blocked_tables", "blocked_columns", mode="before")
     @classmethod
-    def parse_blocked_functions(cls, v: str | list[str]) -> list[str]:
+    def parse_string_list(cls, v: str | list[str]) -> list[str]:
         """Parse comma-separated string or list."""
         if isinstance(v, str):
             return [f.strip() for f in v.split(",") if f.strip()]
         return v
+
+    @property
+    def access_policy_prompt(self) -> str | None:
+        """Blocked-objects description injected into the SQL generation prompt.
+
+        Tells the LLM which objects are off-limits and instructs it to answer
+        ``ACCESS_DENIED: <object>`` instead of substituting other tables, so
+        users get an explicit permission message rather than silently
+        different data.
+
+        Returns:
+            str | None: Policy text, or None when nothing is blocked.
+        """
+        if not self.blocked_tables and not self.blocked_columns:
+            return None
+        lines: list[str] = []
+        if self.blocked_tables:
+            lines.append("Blocked tables (absolute access forbidden):")
+            lines.extend(f"- {t}" for t in self.blocked_tables)
+        if self.blocked_columns:
+            lines.append("Blocked columns (must NOT appear anywhere in any query):")
+            lines.extend(f"- {c}" for c in self.blocked_columns)
+        lines.append(
+            "If the user's question requires a blocked table or column, do NOT "
+            "substitute a different table or column. Reply with exactly one line "
+            "and nothing else:\nACCESS_DENIED: <blocked object name>"
+        )
+        return "\n".join(lines)
 
 
 class ValidationConfig(BaseSettings):
@@ -115,9 +177,6 @@ class ValidationConfig(BaseSettings):
 
     max_question_length: int = Field(
         default=10000, ge=1, le=50000, description="Maximum question length in characters"
-    )
-    min_confidence_score: int = Field(
-        default=70, ge=0, le=100, description="Minimum confidence score (0-100)"
     )
 
     # Result validation settings
@@ -164,6 +223,17 @@ class ResilienceConfig(BaseSettings):
         default=60.0, ge=10.0, le=300.0, description="Circuit breaker timeout in seconds"
     )
 
+    # Concurrency limits (enforced by MultiRateLimiter in the request path)
+    query_rate_limit: int = Field(
+        default=10, ge=1, le=1000, description="Max concurrent query requests"
+    )
+    llm_rate_limit: int = Field(
+        default=5, ge=1, le=1000, description="Max concurrent LLM API calls"
+    )
+    rate_limit_timeout: float = Field(
+        default=5.0, ge=0.1, le=60.0, description="Seconds to wait for a rate limiter slot"
+    )
+
 
 class ObservabilityConfig(BaseSettings):
     """Observability and monitoring configuration."""
@@ -196,12 +266,54 @@ class Settings(BaseSettings):
 
     # Nested configurations
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    extra_databases: list[DatabaseConfig] = Field(
+        default_factory=list,
+        description="Additional databases (JSON array via EXTRA_DATABASES env var)",
+    )
     openai: OpenAIConfig = Field(default_factory=OpenAIConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     validation: ValidationConfig = Field(default_factory=ValidationConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
     resilience: ResilienceConfig = Field(default_factory=ResilienceConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
+
+    @field_validator("extra_databases", mode="before")
+    @classmethod
+    def parse_extra_databases(cls, v: str | list[dict] | list[DatabaseConfig] | None):
+        """Parse EXTRA_DATABASES from a JSON string when provided via env var.
+
+        Args:
+            v: JSON string, list of dicts, list of DatabaseConfig, or None.
+
+        Returns:
+            list[DatabaseConfig]: Parsed extra database configurations.
+        """
+        if v is None or v == "":
+            return []
+        if isinstance(v, str):
+            try:
+                parsed = json.loads(v)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"EXTRA_DATABASES is not valid JSON: {e}") from e
+            if not isinstance(parsed, list):
+                raise ValueError("EXTRA_DATABASES must be a JSON array of database objects")
+            return parsed
+        return v
+
+    @model_validator(mode="after")
+    def validate_databases(self) -> "Settings":
+        """Ensure every configured database has a unique name."""
+        names = [self.database.name] + [db.name for db in self.extra_databases]
+        duplicates = {name for name in names if names.count(name) > 1}
+        if duplicates:
+            raise ValueError(f"Duplicate database names configured: {sorted(duplicates)}")
+        return self
+
+    @property
+    def databases(self) -> dict[str, DatabaseConfig]:
+        """All configured databases keyed by name (primary first)."""
+        configs = [self.database, *self.extra_databases]
+        return {config.name: config for config in configs}
 
     @property
     def is_production(self) -> bool:

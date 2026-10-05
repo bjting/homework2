@@ -659,3 +659,294 @@ class TestSubqueryWithForbiddenOperations:
         is_valid, error = validator.validate(sql)
         assert is_valid
         assert error is None
+
+
+class TestSecurityPolicyWiring:
+    """Test that the configured security policy is actually enforced:
+    blocked tables/columns (sensitive objects) and write-operation policy."""
+
+    def test_blocked_tables_reject_access(self) -> None:
+        """Queries touching a blocked table are rejected."""
+        config = SecurityConfig(blocked_tables=["audit_logs", "user_credentials"])
+        validator = SQLValidator(config=config, blocked_tables=config.blocked_tables)
+
+        is_valid, error = validator.validate("SELECT * FROM audit_logs")
+        assert not is_valid
+        assert "audit_logs" in error
+
+        is_valid, error = validator.validate("SELECT * FROM user_credentials WHERE id = 1")
+        assert not is_valid
+        assert "user_credentials" in error
+
+    def test_blocked_tables_case_insensitive(self) -> None:
+        """Blocked table matching is case-insensitive."""
+        config = SecurityConfig(blocked_tables=["Audit_Logs"])
+        validator = SQLValidator(config=config, blocked_tables=config.blocked_tables)
+
+        is_valid, _error = validator.validate("SELECT * FROM audit_logs")
+        assert not is_valid
+
+    def test_allowed_table_passes_with_blocked_tables_configured(self) -> None:
+        """Tables not on the blocked list remain queryable."""
+        config = SecurityConfig(blocked_tables=["audit_logs"])
+        validator = SQLValidator(config=config, blocked_tables=config.blocked_tables)
+
+        is_valid, error = validator.validate("SELECT * FROM users")
+        assert is_valid
+        assert error is None
+
+    def test_blocked_tables_in_subquery_rejected(self) -> None:
+        """Blocked tables are rejected inside subqueries and CTEs too."""
+        config = SecurityConfig(blocked_tables=["secrets"])
+        validator = SQLValidator(config=config, blocked_tables=config.blocked_tables)
+
+        is_valid, error = validator.validate(
+            "SELECT * FROM users WHERE id IN (SELECT user_id FROM secrets)"
+        )
+        assert not is_valid
+        assert "secrets" in error
+
+        is_valid, error = validator.validate(
+            "WITH leaked AS (SELECT * FROM secrets) SELECT * FROM leaked"
+        )
+        assert not is_valid
+        assert "secrets" in error
+
+    def test_blocked_columns_reject_access(self) -> None:
+        """Queries selecting a blocked column are rejected."""
+        config = SecurityConfig(blocked_columns=["password"])
+        validator = SQLValidator(config=config, blocked_columns=config.blocked_columns)
+
+        is_valid, error = validator.validate("SELECT password FROM users")
+        assert not is_valid
+        assert "password" in error
+
+        # SELECT * is rejected by the star-access guard (it hides column refs),
+        # so the message mentions SELECT * rather than the blocked column
+        is_valid, error = validator.validate("SELECT * FROM users WHERE password = 'x'")
+        assert not is_valid
+        assert "SELECT *" in error
+
+    def test_blocked_columns_qualified_names(self) -> None:
+        """table.column qualified blocking works precisely."""
+        config = SecurityConfig(blocked_columns=["users.email"])
+        validator = SQLValidator(config=config, blocked_columns=config.blocked_columns)
+
+        # Qualified reference is blocked
+        is_valid, error = validator.validate("SELECT users.email FROM users")
+        assert not is_valid
+        assert "users.email" in error
+
+        # Same column name on another table remains allowed
+        is_valid, error = validator.validate("SELECT contacts.email FROM contacts")
+        assert is_valid
+        assert error is None
+
+    def test_write_operations_still_rejected_by_default(self) -> None:
+        """DML remains rejected when allow_write_operations is False."""
+        validator = SQLValidator(config=SecurityConfig(allow_write_operations=False))
+        for sql in (
+            "INSERT INTO logs VALUES (1)",
+            "UPDATE users SET name = 'x'",
+            "DELETE FROM users",
+        ):
+            is_valid, _error = validator.validate(sql)
+            assert not is_valid
+
+    def test_write_operations_allowed_when_configured(self) -> None:
+        """DML passes validation when allow_write_operations is True."""
+        validator = SQLValidator(
+            config=SecurityConfig(allow_write_operations=True),
+        )
+        for sql in (
+            "INSERT INTO logs VALUES (1)",
+            "UPDATE users SET name = 'x' WHERE id = 1",
+            "DELETE FROM users WHERE id = 1",
+        ):
+            is_valid, error = validator.validate(sql)
+            assert is_valid, f"{sql} should be allowed: {error}"
+
+    def test_ddl_still_rejected_even_when_writes_allowed(self) -> None:
+        """DDL/admin statements stay forbidden regardless of the write flag."""
+        validator = SQLValidator(config=SecurityConfig(allow_write_operations=True))
+        for sql in (
+            "DROP TABLE users",
+            "CREATE TABLE evil (id int)",
+            "ALTER TABLE users ADD COLUMN x int",
+            "GRANT ALL ON users TO public",
+        ):
+            is_valid, _error = validator.validate(sql)
+            assert not is_valid, f"{sql} must remain forbidden"
+
+    def test_dangerous_functions_blocked_even_when_writes_allowed(self) -> None:
+        """Blocked functions are enforced independently of the write flag."""
+        validator = SQLValidator(config=SecurityConfig(allow_write_operations=True))
+        is_valid, error = validator.validate("SELECT pg_sleep(100)")
+        assert not is_valid
+        assert "pg_sleep" in error
+
+
+class TestStarAccessBypass:
+    """SELECT * must not bypass blocked_columns (regression tests)."""
+
+    def make_validator(self, blocked_columns: list[str]) -> SQLValidator:
+        return SQLValidator(
+            config=SecurityConfig(),
+            blocked_columns=blocked_columns,
+        )
+
+    def test_select_star_blocked_when_columns_restricted(self) -> None:
+        """SELECT * returns no column nodes, so it must be rejected explicitly."""
+        validator = self.make_validator(["users.email"])
+        is_valid, error = validator.validate("SELECT * FROM users")
+        assert not is_valid
+        assert "SELECT *" in error
+
+    def test_table_qualified_star_blocked(self) -> None:
+        """SELECT u.* is the same bypass vector."""
+        validator = self.make_validator(["users.email"])
+        is_valid, error = validator.validate("SELECT u.* FROM users u")
+        assert not is_valid
+        assert "SELECT *" in error
+
+    def test_star_inside_cte_blocked(self) -> None:
+        """A star hidden inside a CTE must be caught too."""
+        validator = self.make_validator(["users.email"])
+        is_valid, _error = validator.validate("WITH t AS (SELECT * FROM users) SELECT * FROM t")
+        assert not is_valid
+
+    def test_explicit_safe_columns_pass(self) -> None:
+        """Enumerating non-blocked columns remains allowed."""
+        validator = self.make_validator(["users.email"])
+        is_valid, error = validator.validate("SELECT id, username FROM users")
+        assert is_valid, error
+
+    def test_select_star_allowed_without_restrictions(self) -> None:
+        """Without column restrictions, SELECT * keeps working as before."""
+        validator = self.make_validator([])
+        is_valid, error = validator.validate("SELECT * FROM users")
+        assert is_valid, error
+
+
+class TestAliasBypass:
+    """Table aliases must not bypass blocked_columns (found in live webui test)."""
+
+    def make_validator(self, blocked_columns: list[str]) -> SQLValidator:
+        return SQLValidator(
+            config=SecurityConfig(),
+            blocked_columns=blocked_columns,
+        )
+
+    def test_aliased_blocked_column_rejected(self) -> None:
+        """SELECT u.email FROM users u must hit the users.email block."""
+        validator = self.make_validator(["users.email"])
+        is_valid, error = validator.validate(
+            "SELECT u.username, u.email FROM users u ORDER BY u.id LIMIT 100"
+        )
+        assert not is_valid
+        assert "users.email" in error
+
+    def test_expanded_star_columns_rejected(self) -> None:
+        """LLM-explicit column lists with aliases must be caught too."""
+        validator = self.make_validator(["users.email"])
+        is_valid, error = validator.validate(
+            "SELECT u.id, u.username, u.email, u.full_name, u.role, "
+            "u.created_at, u.updated_at FROM users AS u LIMIT 100"
+        )
+        assert not is_valid
+        assert "users.email" in error
+
+    def test_aliased_join_blocked_column_rejected(self) -> None:
+        """JOIN with aliases must resolve each alias to its real table."""
+        validator = self.make_validator(["users.email"])
+        is_valid, error = validator.validate(
+            "SELECT p.title, u.email FROM posts AS p JOIN users AS u ON u.id = p.author_id"
+        )
+        assert not is_valid
+        assert "users.email" in error
+
+    def test_direct_qualified_name_still_rejected(self) -> None:
+        """Non-aliased qualified references keep working."""
+        validator = self.make_validator(["users.email"])
+        is_valid, error = validator.validate("SELECT users.email FROM users")
+        assert not is_valid
+        assert "users.email" in error
+
+    def test_safe_aliased_columns_pass(self) -> None:
+        """Aliased queries touching only allowed columns stay valid."""
+        validator = self.make_validator(["users.email"])
+        is_valid, error = validator.validate(
+            "SELECT u.username FROM users u ORDER BY u.id LIMIT 100"
+        )
+        assert is_valid, error
+
+
+class TestSchemaAwareBareColumn:
+    """Bare columns must resolve to owning tables via schema (live-found bypass)."""
+
+    @staticmethod
+    def make_schema():
+        from pg_mcp.models.schema import ColumnInfo, DatabaseSchema, TableInfo
+
+        return DatabaseSchema(
+            database_name="blog_small",
+            tables=[
+                TableInfo(
+                    schema_name="public",
+                    table_name="users",
+                    columns=[
+                        ColumnInfo(
+                            name="id", data_type="integer", is_nullable=False, is_primary_key=True
+                        ),
+                        ColumnInfo(name="username", data_type="varchar(50)", is_nullable=False),
+                        ColumnInfo(name="email", data_type="varchar(100)", is_nullable=False),
+                    ],
+                ),
+                TableInfo(
+                    schema_name="public",
+                    table_name="posts",
+                    columns=[
+                        ColumnInfo(
+                            name="id", data_type="integer", is_nullable=False, is_primary_key=True
+                        ),
+                        ColumnInfo(name="title", data_type="varchar(200)", is_nullable=False),
+                        ColumnInfo(name="email", data_type="varchar(100)", is_nullable=True),
+                    ],
+                ),
+            ],
+            version="16",
+        )
+
+    def make_validator(self) -> SQLValidator:
+        return SQLValidator(config=SecurityConfig(), blocked_columns=["users.email"])
+
+    def test_bare_blocked_column_rejected(self) -> None:
+        """SELECT email FROM users (bare column) must hit the users.email block."""
+        validator = self.make_validator()
+        is_valid, error = validator.validate(
+            "SELECT username, email FROM users", schema=self.make_schema()
+        )
+        assert not is_valid
+        assert "users.email" in error
+
+    def test_bare_safe_column_passes(self) -> None:
+        """Bare columns that map to no blocked table.column stay valid."""
+        validator = self.make_validator()
+        is_valid, error = validator.validate(
+            "SELECT username, id FROM users", schema=self.make_schema()
+        )
+        assert is_valid, error
+
+    def test_bare_column_in_other_table_passes(self) -> None:
+        """Only users.email is blocked; posts.email must remain accessible."""
+        validator = self.make_validator()
+        is_valid, error = validator.validate(
+            "SELECT title, email FROM posts", schema=self.make_schema()
+        )
+        assert is_valid, error
+
+    def test_bare_column_without_schema_still_checked_against_bare_blocks(self) -> None:
+        """Without schema, bare-name blocks (e.g. password) keep working."""
+        validator = SQLValidator(config=SecurityConfig(), blocked_columns=["password"])
+        is_valid, _ = validator.validate("SELECT username, password FROM users")
+        assert not is_valid
